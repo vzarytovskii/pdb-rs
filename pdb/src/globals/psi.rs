@@ -89,7 +89,7 @@ impl PublicSymbolIndex {
         let addr_map: Vec<u32>;
         {
             let num_addrs = addr_map_bytes.len() / 4;
-            info!("Number of entries in address map: {}", num_addrs);
+            debug!("Number of entries in address map: {}", num_addrs);
 
             let mut addr_parser = Parser::new(addr_map_bytes);
             let addr_map_u32_slice: &[U32<LE>] = addr_parser.slice(num_addrs)?;

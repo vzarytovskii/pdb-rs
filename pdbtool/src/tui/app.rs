@@ -44,6 +44,9 @@ impl TuiApp {
         
         // Update navigation with actual stream information from PDB
         navigator.update_streams_from_pdb(&pdb);
+        
+        // Update navigation with actual symbol information from PDB
+        navigator.update_symbols_from_pdb(&pdb);
 
         Ok(Self {
             pdb,

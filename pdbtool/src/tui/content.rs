@@ -283,6 +283,10 @@ pub struct GlobalsHandler;
 
 impl ContentProvider for GlobalsHandler {
     fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        self.get_content_with_area(pdb, 80, 24) // Default fallback dimensions
+    }
+    
+    fn get_content_with_area(&self, pdb: &Pdb, area_width: u16, _area_height: u16) -> Result<MultiWidget<'static>> {
         // Try to read global symbol stream
         let gss = match pdb.gss() {
             Ok(gss) => gss,
@@ -309,9 +313,21 @@ impl ContentProvider for GlobalsHandler {
         let mut global_symbols = Vec::new();
         let mut num_symbols = 0;
         let stream_offset = 0;
+        const MAX_SYMBOLS_TO_SHOW: usize = 5000;
+        
+        // Calculate max text width for symbol display
+        let max_symbol_text_width = (area_width as usize).saturating_sub(20);
 
         // Process each symbol record
         for (record_range, sym) in iter {
+            if num_symbols >= MAX_SYMBOLS_TO_SHOW {
+                global_symbols.push(ListItem::new(format!(
+                    "... and more symbols (showing first {} - use CLI for complete output)",
+                    MAX_SYMBOLS_TO_SHOW
+                )));
+                break;
+            }
+            
             let mut symbol_info = String::new();
             
             // Format the symbol using the existing dump_sym function
@@ -325,13 +341,8 @@ impl ContentProvider for GlobalsHandler {
                 symbol_info = format!("Error parsing symbol: {}", e);
             }
 
-            // Clean up the output and create list item
-            let display_text = symbol_info
-                .lines()
-                .next()
-                .unwrap_or("Invalid symbol")
-                .trim()
-                .to_string();
+            // Clean up and truncate the output for display
+            let display_text = helpers::format_symbol_text(&symbol_info, max_symbol_text_width);
 
             global_symbols.push(ListItem::new(format!(
                 "[{:08x}] {}",
@@ -344,7 +355,7 @@ impl ContentProvider for GlobalsHandler {
 
         // Create summary information
         let summary = helpers::create_paragraph(format!(
-            "Global Symbols ({} total)\nStream size: {} bytes",
+            "Global Symbols ({} shown)\nStream size: {} bytes",
             num_symbols,
             symbol_records.len()
         ));
@@ -501,20 +512,384 @@ impl ContentProvider for TypesHandler {
     }
 }
 
-/// Symbols content handler
+/// Symbols content handler (general overview)
 pub struct SymbolsHandler;
 
 impl ContentProvider for SymbolsHandler {
-    fn get_content(&self, _pdb: &Pdb) -> Result<MultiWidget<'static>> {
-        // TODO: Implement symbol browsing
-        let content = helpers::create_paragraph(
-            "Symbol information\n\nTODO: Implement symbol browser with search capabilities"
-                .to_string(),
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        // Simplified overview that avoids expensive operations that might cause issues
+        let overview_info = format!(
+            "Symbol Information Overview\n\n\
+            This PDB contains various types of symbols:\n\n\
+            • Global Symbols - Exported functions and variables\n\
+            • Public Symbols - Public interface symbols\n\
+            • Module Symbols - Per-module debug symbols\n\n\
+            Navigate to the subcategories below to explore symbols in detail.\n\n\
+            Note: Symbol counts will be displayed when you select specific categories."
         );
+        
+        let content = helpers::create_paragraph(overview_info);
         Ok(MultiWidget::single(
             content,
             ratatui::layout::Constraint::Min(1),
         ))
+    }
+}
+
+/// Global symbols content handler
+pub struct GlobalSymbolsHandler;
+
+impl ContentProvider for GlobalSymbolsHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        self.get_content_with_area(pdb, 80, 24) // Default fallback dimensions
+    }
+    
+    fn get_content_with_area(&self, pdb: &Pdb, area_width: u16, _area_height: u16) -> Result<MultiWidget<'static>> {
+        // Try to read global symbol stream
+        let gss = match pdb.gss() {
+            Ok(gss) => gss,
+            Err(e) => {
+                let error_content = helpers::create_paragraph(format!(
+                    "Global Symbol Stream not available\n\nError: {}\n\nThis PDB may not contain global symbols or the stream may be corrupted.", e
+                ));
+                return Ok(MultiWidget::single(
+                    error_content,
+                    ratatui::layout::Constraint::Min(1),
+                ));
+            }
+        };
+
+        let type_stream = pdb.read_type_stream()?;
+        let ipi = pdb.read_ipi_stream()?;
+        let symbol_records = &gss.stream_data;
+
+        // Create iterator for symbol records
+        let iter = ms_pdb::syms::SymIter::new(symbol_records).with_ranges();
+        let mut context = DumpSymsContext::new(&type_stream, &ipi);
+        context.show_type_index = true;
+
+        let mut global_symbols = Vec::new();
+        let mut num_symbols = 0;
+        let stream_offset = 0;
+        const MAX_SYMBOLS_TO_SHOW: usize = 5000;
+        
+        // Calculate max text width: area_width - borders - prefix - padding
+        // Format is "[xxxxxxxx] symbol_text", so 12 chars for prefix
+        let max_symbol_text_width = (area_width as usize).saturating_sub(20); // Conservative padding
+
+        // Process each symbol record
+        for (record_range, sym) in iter {
+            if num_symbols >= MAX_SYMBOLS_TO_SHOW {
+                global_symbols.push(ListItem::new(format!(
+                    "... and more symbols (showing first {} - use CLI for complete output)",
+                    MAX_SYMBOLS_TO_SHOW
+                )));
+                break;
+            }
+            
+            let mut symbol_info = String::new();
+            
+            // Format the symbol using the existing dump_sym function
+            if let Err(e) = crate::dump::sym::dump_sym(
+                &mut symbol_info,
+                &mut context,
+                stream_offset + record_range.start as u32,
+                sym.kind,
+                sym.data,
+            ) {
+                symbol_info = format!("Error parsing symbol: {}", e);
+            }
+
+            // Clean up and truncate the output for display
+            let display_text = helpers::format_symbol_text(&symbol_info, max_symbol_text_width);
+
+            global_symbols.push(ListItem::new(format!(
+                "[{:08x}] {}",
+                record_range.start,
+                display_text
+            )));
+
+            num_symbols += 1;
+        }
+
+        // Create summary information
+        let summary = helpers::create_paragraph(format!(
+            "Global Symbols ({} shown)\nStream size: {} bytes",
+            num_symbols,
+            symbol_records.len()
+        ));
+
+        // Handle empty case
+        if global_symbols.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No global symbols found in this PDB file".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(3))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        // Create the symbols list
+        let list = helpers::create_list(global_symbols);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(3))
+            .add(list, ratatui::layout::Constraint::Min(10)))
+    }
+}
+
+/// Public symbols content handler
+pub struct PublicSymbolsHandler;
+
+impl ContentProvider for PublicSymbolsHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        self.get_content_with_area(pdb, 80, 24) // Default fallback dimensions
+    }
+    
+    fn get_content_with_area(&self, pdb: &Pdb, area_width: u16, _area_height: u16) -> Result<MultiWidget<'static>> {
+        // Try to read public symbol index
+        let psi = match pdb.read_psi() {
+            Ok(psi) => psi,
+            Err(e) => {
+                let error_content = helpers::create_paragraph(format!(
+                    "Public Symbol Index not available\n\nError: {}\n\nThis PDB may not contain public symbols or the stream may be corrupted.", e
+                ));
+                return Ok(MultiWidget::single(
+                    error_content,
+                    ratatui::layout::Constraint::Min(1),
+                ));
+            }
+        };
+
+        let gss = pdb.gss()?;
+        let type_stream = pdb.read_type_stream()?;
+        let ipi = pdb.read_ipi_stream()?;
+
+        let mut context = DumpSymsContext::new(&type_stream, &ipi);
+        let mut public_symbols = Vec::new();
+        let mut num_symbols = 0;
+        const MAX_SYMBOLS_TO_SHOW: usize = 5000;
+        
+        // Calculate max text width for symbol display
+        let max_symbol_text_width = (area_width as usize).saturating_sub(20);
+        
+        // Get total count first for display
+        let total_count = psi.names().iter(gss).count();
+
+        // Process each public symbol
+        for sym in psi.names().iter(gss) {
+            if num_symbols >= MAX_SYMBOLS_TO_SHOW {
+                public_symbols.push(ListItem::new(format!(
+                    "... and more symbols (showing first {} - use CLI for complete output)",
+                    MAX_SYMBOLS_TO_SHOW
+                )));
+                break;
+            }
+            
+            let mut symbol_info = String::new();
+            
+            // Format the symbol using the existing dump_sym function
+            if let Err(e) = crate::dump::sym::dump_sym(
+                &mut symbol_info,
+                &mut context,
+                0, // TODO: Get correct offset
+                sym.kind,
+                sym.data,
+            ) {
+                symbol_info = format!("Error parsing symbol: {}", e);
+            }
+
+            // Clean up and truncate the output for display
+            let display_text = helpers::format_symbol_text(&symbol_info, max_symbol_text_width);
+
+            public_symbols.push(ListItem::new(display_text));
+            num_symbols += 1;
+        }
+
+        // Create summary information
+        let summary = helpers::create_paragraph(format!(
+            "Public Symbols ({} shown)\nTotal records: {}",
+            num_symbols,
+            total_count
+        ));
+
+        // Handle empty case
+        if public_symbols.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No public symbols found in this PDB file".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(3))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        // Create the symbols list
+        let list = helpers::create_list(public_symbols);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(3))
+            .add(list, ratatui::layout::Constraint::Min(10)))
+    }
+}
+
+/// Symbol modules overview handler
+pub struct SymbolModulesHandler;
+
+impl ContentProvider for SymbolModulesHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        let dbi_stream = pdb.read_dbi_stream()?;
+        
+        let mut module_items = Vec::new();
+        let mut total_symbols = 0;
+        let mut modules_with_symbols = 0;
+
+        for (module_index, module) in dbi_stream.iter_modules().enumerate() {
+            let symbol_count = if let Ok(Some(module_stream)) = pdb.read_module_stream(&module) {
+                if let Ok(sym_data) = module_stream.sym_data() {
+                    let iter = ms_pdb::syms::SymIter::new(sym_data);
+                    let count = iter.count();
+                    total_symbols += count;
+                    if count > 0 {
+                        modules_with_symbols += 1;
+                    }
+                    count
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let display_text = format!(
+                "#{:3} {} ({} symbols)\n     Object: {}",
+                module_index,
+                module.module_name(),
+                symbol_count,
+                module.obj_file()
+            );
+
+            module_items.push(ListItem::new(display_text));
+        }
+
+        let summary = helpers::create_paragraph(format!(
+            "Module Symbols Overview\n{} modules total, {} with symbols\nTotal symbols across all modules: {}",
+            module_items.len(),
+            modules_with_symbols,
+            total_symbols
+        ));
+
+        let list = helpers::create_list(module_items);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(4))
+            .add(list, ratatui::layout::Constraint::Min(10)))
+    }
+}
+
+/// Individual module symbols handler
+pub struct ModuleSymbolsHandler {
+    pub module_index: usize,
+}
+
+impl ContentProvider for ModuleSymbolsHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        self.get_content_with_area(pdb, 80, 24) // Default fallback dimensions
+    }
+    
+    fn get_content_with_area(&self, pdb: &Pdb, area_width: u16, _area_height: u16) -> Result<MultiWidget<'static>> {
+        let dbi_stream = pdb.read_dbi_stream()?;
+        
+        // Find the specific module
+        let module = dbi_stream.iter_modules().nth(self.module_index)
+            .ok_or_else(|| anyhow::anyhow!("Module #{} not found", self.module_index))?;
+        
+        // Read module stream
+        let module_stream = match pdb.read_module_stream(&module)? {
+            Some(stream) => stream,
+            None => {
+                let error_content = helpers::create_paragraph(format!(
+                    "Module #{} does not have a module stream\n(no symbols for this module)",
+                    self.module_index
+                ));
+                return Ok(MultiWidget::single(
+                    error_content,
+                    ratatui::layout::Constraint::Min(1),
+                ));
+            }
+        };
+
+        let sym_data = module_stream.sym_data()?;
+        let type_stream = pdb.read_type_stream()?;
+        let ipi = pdb.read_ipi_stream()?;
+
+        // Create iterator for symbol records
+        let iter = ms_pdb::syms::SymIter::new(sym_data).with_ranges();
+        let mut context = DumpSymsContext::new(&type_stream, &ipi);
+        context.show_record_offsets = true;
+
+        let mut module_symbols = Vec::new();
+        let mut num_symbols = 0;
+        const MAX_SYMBOLS_TO_SHOW: usize = 3000;
+        
+        // Calculate max text width for symbol display
+        let max_symbol_text_width = (area_width as usize).saturating_sub(20);
+
+        // Process each symbol record
+        for (record_range, sym) in iter {
+            if num_symbols >= MAX_SYMBOLS_TO_SHOW {
+                module_symbols.push(ListItem::new(format!(
+                    "... and more symbols (showing first {} - use CLI for complete output)",
+                    MAX_SYMBOLS_TO_SHOW
+                )));
+                break;
+            }
+            
+            let mut symbol_info = String::new();
+            
+            // Format the symbol using the existing dump_sym function
+            if let Err(e) = crate::dump::sym::dump_sym(
+                &mut symbol_info,
+                &mut context,
+                4 + record_range.start as u32, // Module streams start at offset 4
+                sym.kind,
+                sym.data,
+            ) {
+                symbol_info = format!("Error parsing symbol: {}", e);
+            }
+
+            // Clean up and truncate the output for display
+            let display_text = helpers::format_symbol_text(&symbol_info, max_symbol_text_width);
+
+            module_symbols.push(ListItem::new(display_text));
+            num_symbols += 1;
+        }
+
+        // Create summary information
+        let summary = helpers::create_paragraph(format!(
+            "Module #{} Symbols: {}\nObject: {}\nSymbols shown: {} / Total: {}",
+            self.module_index,
+            module.module_name(),
+            module.obj_file(),
+            num_symbols,
+            ms_pdb::syms::SymIter::new(sym_data).count()
+        ));
+
+        // Handle empty case
+        if module_symbols.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No symbols found in this module".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(5))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        // Create the symbols list
+        let list = helpers::create_list(module_symbols);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(5))
+            .add(list, ratatui::layout::Constraint::Min(10)))
     }
 }
 
@@ -853,6 +1228,12 @@ pub fn get_content_handler(node_id: &super::navigation::TreeNodeId) -> Box<dyn C
         super::navigation::TreeNodeId::Globals => Box::new(GlobalsHandler),
         super::navigation::TreeNodeId::Types => Box::new(TypesHandler),
         super::navigation::TreeNodeId::Symbols => Box::new(SymbolsHandler),
+        super::navigation::TreeNodeId::SymbolsGlobal => Box::new(GlobalSymbolsHandler),
+        super::navigation::TreeNodeId::SymbolsPublic => Box::new(PublicSymbolsHandler),
+        super::navigation::TreeNodeId::SymbolsModules => Box::new(SymbolModulesHandler),
+        super::navigation::TreeNodeId::SymbolsModule { index } => Box::new(ModuleSymbolsHandler { 
+            module_index: *index 
+        }),
         super::navigation::TreeNodeId::Streams => Box::new(StreamsHandler),
         super::navigation::TreeNodeId::Stream { index } => Box::new(SingleStreamHandler { 
             stream_index: *index 

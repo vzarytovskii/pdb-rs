@@ -8,6 +8,10 @@ pub enum TreeNodeId {
     DebugInfo,
     Globals,
     Symbols,
+    SymbolsGlobal,
+    SymbolsPublic,
+    SymbolsModules,
+    SymbolsModule { index: usize },
     Types,
     Modules,
     Module { index: usize },
@@ -148,12 +152,19 @@ impl TreeNavigator {
             ));
         }
 
+        // Create symbol hierarchy structure
+        let symbols_children = vec![
+            TreeNode::new("Global Symbols", TreeNodeId::SymbolsGlobal),
+            TreeNode::new("Public Symbols", TreeNodeId::SymbolsPublic),
+            TreeNode::new("Module Symbols", TreeNodeId::SymbolsModules),
+        ];
+
         let debug_info_children = vec![
             TreeNode::new("Modules", TreeNodeId::Modules),
             TreeNode::new("Names", TreeNodeId::Names),
             TreeNode::new("Globals", TreeNodeId::Globals),
             TreeNode::new("Types", TreeNodeId::Types),
-            TreeNode::new("Symbols", TreeNodeId::Symbols),
+            TreeNode::with_children("Symbols", TreeNodeId::Symbols, symbols_children),
             TreeNode::with_children("Streams", TreeNodeId::Streams, stream_children),
         ];
 
@@ -410,6 +421,52 @@ impl TreeNavigator {
                 current_nodes = &mut current_nodes[index].children;
             }
         }
+    }
+
+    /// Update symbol modules with actual PDB module information
+    pub fn update_symbols_from_pdb(&mut self, pdb: &Pdb) {
+        // Find the "Symbols" node under the main PDB entry and update module symbols
+        for root_node in &mut self.tree_nodes {
+            if matches!(root_node.id, TreeNodeId::DebugInfo) {
+                // Look for the Symbols node within the debug info children
+                for symbols_node in &mut root_node.children {
+                    if matches!(symbols_node.id, TreeNodeId::Symbols) {
+                        // Look for the SymbolsModules node within the Symbols children
+                        for symbols_child in &mut symbols_node.children {
+                            if matches!(symbols_child.id, TreeNodeId::SymbolsModules) {
+                                // Clear existing module children and rebuild with actual modules
+                                symbols_child.children.clear();
+                                
+                                // Read DBI stream to get module information
+                                if let Ok(dbi_stream) = pdb.read_dbi_stream() {
+                                    for (module_index, module) in dbi_stream.iter_modules().enumerate() {
+                                        let module_name = format!(
+                                            "#{} - {}",
+                                            module_index,
+                                            module.module_name()
+                                        );
+                                        
+                                        symbols_child.children.push(TreeNode::new(
+                                            &module_name,
+                                            TreeNodeId::SymbolsModule { index: module_index },
+                                        ));
+                                    }
+                                }
+                                
+                                // Update depths for the new children
+                                Self::set_depths(&mut symbols_child.children, symbols_child.depth + 1);
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        
+        // Refresh the flat items after updating
+        self.update_flat_items();
     }
 
     /// Update stream nodes with actual PDB stream information

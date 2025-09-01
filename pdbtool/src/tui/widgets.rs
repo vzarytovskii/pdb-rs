@@ -159,6 +159,40 @@ pub mod helpers {
         create_paragraph(format!("Error: {error}"))
     }
 
+    /// Truncate text to fit within a maximum width, adding ellipsis if needed
+    pub fn truncate_text(text: &str, max_width: usize) -> String {
+        if max_width <= 3 {
+            return "...".to_string();
+        }
+        
+        if text.len() <= max_width {
+            text.to_string()
+        } else {
+            format!("{}...", &text[..max_width.saturating_sub(3)])
+        }
+    }
+
+    /// Truncate and clean symbol display text for TUI display
+    pub fn format_symbol_text(symbol_text: &str, max_width: usize) -> String {
+        // First clean up the text by removing excessive whitespace and control characters
+        let cleaned = symbol_text
+            .lines()
+            .next()
+            .unwrap_or("Invalid symbol")
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
+            .collect::<String>();
+        
+        // Replace multiple spaces with single spaces
+        let normalized = cleaned
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        
+        truncate_text(&normalized, max_width)
+    }
+
     /// Create a hex dump widget from raw bytes
     pub fn create_hex_dump(data: &[u8], start_offset: usize, max_lines: Option<usize>) -> WidgetType<'static> {
         create_hex_dump_with_width(data, start_offset, max_lines, None)
