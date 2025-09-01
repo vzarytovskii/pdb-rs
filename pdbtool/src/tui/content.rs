@@ -7,11 +7,13 @@ use anyhow::Result;
 use ms_pdb::codeview::IteratorWithRangesExt;
 use ms_pdb::dbi::{DbiSourcesSubstream, ModuleInfo, DBI_STREAM_VERSION_V110, DBI_STREAM_VERSION_V50, DBI_STREAM_VERSION_V60, DBI_STREAM_VERSION_V70, DBI_STREAM_VERSION_VC41};
 use ms_pdb::dbi::optional_dbg::OptionalDebugHeaderStream;
+use ms_pdb::lines::{FileChecksum, LinesSubsection, SubsectionKind};
 use ms_pdb::names::NameIndex;
 use ms_pdb::pdbi::FeatureCode;
 use ms_pdb::syms::SymIter;
 use ms_pdb::{hash, Pdb, Stream, ReadAt};
 use ratatui::widgets::{ListItem, Row};
+use std::collections::HashMap;
 
 use crate::dump::sym::DumpSymsContext;
 
@@ -375,6 +377,362 @@ impl ContentProvider for GlobalsHandler {
 
         Ok(MultiWidget::new()
             .add(summary, ratatui::layout::Constraint::Length(3))
+            .add(list, ratatui::layout::Constraint::Min(10)))
+    }
+}
+
+/// Lines content handler for C13 line data
+pub struct LinesHandler;
+
+impl ContentProvider for LinesHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        let dbi_stream = pdb.read_dbi_stream()?;
+        let names_stream = pdb.names()?;
+
+        let mut line_items = Vec::new();
+        let mut total_modules = 0;
+        let mut modules_with_lines = 0;
+        let mut modules_with_c11_lines = 0;
+        let mut total_line_blocks = 0;
+
+        // Process all modules to gather line information
+        for (module_index, module) in dbi_stream.iter_modules().enumerate() {
+            total_modules += 1;
+
+            // Check if module has line data
+            let has_c11_lines = module.header().c11_byte_size.get() != 0;
+            let has_c13_lines = module.header().c13_byte_size.get() != 0;
+
+            if has_c11_lines {
+                modules_with_c11_lines += 1;
+            }
+
+            if !has_c13_lines && !has_c11_lines {
+                continue;
+            }
+
+            if has_c11_lines {
+                line_items.push(ListItem::new(format!(
+                    "Module #{}: {} (C11 - obsolete format)",
+                    module_index,
+                    module.module_name()
+                )));
+                continue;
+            }
+
+            modules_with_lines += 1;
+
+            // Read module stream for C13 line data
+            let module_stream = match pdb.read_module_stream(&module)? {
+                Some(stream) => stream,
+                None => continue,
+            };
+
+            let c13_line_data = module_stream.c13_line_data();
+            let mut module_blocks = 0;
+            let mut module_files = Vec::new();
+
+            // Build file checksums map
+            let mut checksums: HashMap<u32, FileChecksum<'_>> = HashMap::new();
+            if let Some(checksums_subsection) = c13_line_data.find_checksums() {
+                for (range, checksum) in checksums_subsection.iter().with_ranges() {
+                    checksums.insert(range.start as u32, checksum);
+                }
+            }
+
+            // Process subsections
+            for subsection in c13_line_data.subsections() {
+                match subsection.kind {
+                    SubsectionKind::LINES => {
+                        if let Ok(lines_subsection) = LinesSubsection::parse(subsection.data) {
+                            for block in lines_subsection.blocks() {
+                                module_blocks += 1;
+                                total_line_blocks += 1;
+
+                                let file_name = if let Some(checksum) = checksums.get(&block.header.file_index.get()) {
+                                    match names_stream.get_string(checksum.name()) {
+                                        Ok(name) => name.to_string(),
+                                        Err(_) => format!("Unknown file (index {})", block.header.file_index.get()),
+                                    }
+                                } else {
+                                    format!("Unknown file (index {})", block.header.file_index.get())
+                                };
+
+                                if !module_files.contains(&file_name) {
+                                    module_files.push(file_name);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Create module summary line
+            let module_summary = if module_blocks > 0 {
+                format!(
+                    "Module #{}: {} ({} line blocks, {} files)",
+                    module_index,
+                    module.module_name(),
+                    module_blocks,
+                    module_files.len()
+                )
+            } else {
+                format!(
+                    "Module #{}: {} (no line blocks)",
+                    module_index,
+                    module.module_name()
+                )
+            };
+
+            line_items.push(ListItem::new(module_summary));
+
+            // Add file details for first few files
+            for file_name in module_files.iter().take(3) {
+                line_items.push(ListItem::new(format!(
+                    "    └─ {}",
+                    file_name
+                )));
+            }
+
+            if module_files.len() > 3 {
+                line_items.push(ListItem::new(format!(
+                    "    └─ ... and {} more files",
+                    module_files.len() - 3
+                )));
+            }
+        }
+
+        // Create summary
+        let summary = helpers::create_paragraph(format!(
+            "Line Information (C13 Format)\n{} modules total, {} with C13 lines, {} with obsolete C11 lines\nTotal line blocks: {}",
+            total_modules,
+            modules_with_lines,
+            modules_with_c11_lines,
+            total_line_blocks
+        ));
+
+        // Handle empty case
+        if line_items.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No line information found in this PDB file".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(4))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        let list = helpers::create_list(line_items);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(4))
+            .add(list, ratatui::layout::Constraint::Min(10)))
+    }
+}
+
+/// Module-specific lines content handler
+pub struct ModuleLinesHandler {
+    pub module_index: usize,
+}
+
+impl ContentProvider for ModuleLinesHandler {
+    fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
+        let dbi_stream = pdb.read_dbi_stream()?;
+        let names_stream = pdb.names()?;
+
+        // Find the specific module
+        let module = dbi_stream.iter_modules().nth(self.module_index)
+            .ok_or_else(|| anyhow::anyhow!("Module #{} not found", self.module_index))?;
+
+        // Check if module has line data
+        let has_c11_lines = module.header().c11_byte_size.get() != 0;
+        let has_c13_lines = module.header().c13_byte_size.get() != 0;
+
+        if has_c11_lines && !has_c13_lines {
+            let content = helpers::create_paragraph(format!(
+                "Module #{}: {}\nObject: {}\n\nThis module uses obsolete C11 line data format which is not supported.\nPlease use newer debugging information.",
+                self.module_index,
+                module.module_name(),
+                module.obj_file()
+            ));
+            return Ok(MultiWidget::single(
+                content,
+                ratatui::layout::Constraint::Min(1),
+            ));
+        }
+
+        if !has_c13_lines {
+            let content = helpers::create_paragraph(format!(
+                "Module #{}: {}\nObject: {}\n\nThis module has no line data.",
+                self.module_index,
+                module.module_name(),
+                module.obj_file()
+            ));
+            return Ok(MultiWidget::single(
+                content,
+                ratatui::layout::Constraint::Min(1),
+            ));
+        }
+
+        // Read module stream for C13 line data
+        let module_stream = match pdb.read_module_stream(&module)? {
+            Some(stream) => stream,
+            None => {
+                let content = helpers::create_paragraph(format!(
+                    "Module #{}: {}\nObject: {}\n\nModule stream not available.",
+                    self.module_index,
+                    module.module_name(),
+                    module.obj_file()
+                ));
+                return Ok(MultiWidget::single(
+                    content,
+                    ratatui::layout::Constraint::Min(1),
+                ));
+            }
+        };
+
+        let c13_line_data = module_stream.c13_line_data();
+        let c13_stream_offset = module_stream.c13_line_data_range().start as u32;
+
+        // Build file checksums map
+        let mut checksums: HashMap<u32, FileChecksum<'_>> = HashMap::new();
+        if let Some(checksums_subsection) = c13_line_data.find_checksums() {
+            for (range, checksum) in checksums_subsection.iter().with_ranges() {
+                checksums.insert(range.start as u32, checksum);
+            }
+        }
+
+        let mut line_items = Vec::new();
+        let mut total_line_blocks = 0;
+        let mut total_lines = 0;
+
+        // Process subsections in detail
+        for (subsection_range, subsection) in c13_line_data.subsections().with_ranges() {
+            match subsection.kind {
+                SubsectionKind::LINES => {
+                    if let Ok(lines_subsection) = LinesSubsection::parse(subsection.data) {
+                        line_items.push(ListItem::new(format!(
+                            "[{:08x}] Lines Subsection: contribution offset 0x{:x}, segment {}, size {}",
+                            c13_stream_offset + subsection_range.start as u32,
+                            lines_subsection.contribution.offset.get(),
+                            lines_subsection.contribution.segment.get(),
+                            lines_subsection.contribution.size.get()
+                        )));
+
+                        for block in lines_subsection.blocks() {
+                            total_line_blocks += 1;
+                            let num_lines = block.header.num_lines.get();
+                            total_lines += num_lines as usize;
+
+                            let file_name = if let Some(checksum) = checksums.get(&block.header.file_index.get()) {
+                                match names_stream.get_string(checksum.name()) {
+                                    Ok(name) => name.to_string(),
+                                    Err(_) => format!("Unknown file (index {})", block.header.file_index.get()),
+                                }
+                            } else {
+                                format!("Unknown file (index {})", block.header.file_index.get())
+                            };
+
+                            line_items.push(ListItem::new(format!(
+                                "  └─ Block: {} ({} lines)",
+                                file_name,
+                                num_lines
+                            )));
+
+                            // Show first few lines for context
+                            for (line_idx, line) in block.lines().iter().take(5).enumerate() {
+                                let line_num = line.line_num_start();
+                                let line_display = if ms_pdb::lines::is_jmc_line(line_num) {
+                                    "<no-step>".to_string()
+                                } else {
+                                    line_num.to_string()
+                                };
+
+                                line_items.push(ListItem::new(format!(
+                                    "      Line {}: {} (offset +{:04x})",
+                                    line_idx + 1,
+                                    line_display,
+                                    line.offset.get()
+                                )));
+                            }
+
+                            if block.lines().len() > 5 {
+                                line_items.push(ListItem::new(format!(
+                                    "      ... and {} more lines",
+                                    block.lines().len() - 5
+                                )));
+                            }
+                        }
+                    }
+                }
+                SubsectionKind::FILE_CHECKSUMS => {
+                    line_items.push(ListItem::new(format!(
+                        "[{:08x}] File Checksums Subsection ({} bytes)",
+                        c13_stream_offset + subsection_range.start as u32,
+                        subsection.data.len()
+                    )));
+
+                    let checksums_subsection = ms_pdb::lines::FileChecksumsSubsection {
+                        bytes: subsection.data,
+                    };
+
+                    for (i, checksum) in checksums_subsection.iter().enumerate().take(10) {
+                        let name = match names_stream.get_string(checksum.name()) {
+                            Ok(name) => name.to_string(),
+                            Err(_) => format!("Unknown name (offset {:08x})", checksum.header.name.get()),
+                        };
+
+                        line_items.push(ListItem::new(format!(
+                            "  └─ Checksum {}: {:?} - {}",
+                            i,
+                            checksum.header.checksum_kind,
+                            name
+                        )));
+                    }
+
+                    let total_checksums = checksums_subsection.iter().count();
+                    if total_checksums > 10 {
+                        line_items.push(ListItem::new(format!(
+                            "  └─ ... and {} more checksums",
+                            total_checksums - 10
+                        )));
+                    }
+                }
+                _ => {
+                    line_items.push(ListItem::new(format!(
+                        "[{:08x}] {:?} Subsection ({} bytes)",
+                        c13_stream_offset + subsection_range.start as u32,
+                        subsection.kind,
+                        subsection.data.len()
+                    )));
+                }
+            }
+        }
+
+        // Create summary
+        let summary = helpers::create_paragraph(format!(
+            "Module #{}: {}\nObject: {}\nLine blocks: {}, Total lines: {}",
+            self.module_index,
+            module.module_name(),
+            module.obj_file(),
+            total_line_blocks,
+            total_lines
+        ));
+
+        // Handle empty case
+        if line_items.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No detailed line information available for this module".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(5))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        let list = helpers::create_list(line_items);
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(5))
             .add(list, ratatui::layout::Constraint::Min(10)))
     }
 }
@@ -1226,6 +1584,10 @@ pub fn get_content_handler(node_id: &super::navigation::TreeNodeId) -> Box<dyn C
         super::navigation::TreeNodeId::Modules => Box::new(ModulesHandler),
         super::navigation::TreeNodeId::Names => Box::new(NamesHandler),
         super::navigation::TreeNodeId::Globals => Box::new(GlobalsHandler),
+        super::navigation::TreeNodeId::Lines => Box::new(LinesHandler),
+        super::navigation::TreeNodeId::LinesModule { index } => Box::new(ModuleLinesHandler { 
+            module_index: *index 
+        }),
         super::navigation::TreeNodeId::Types => Box::new(TypesHandler),
         super::navigation::TreeNodeId::Symbols => Box::new(SymbolsHandler),
         super::navigation::TreeNodeId::SymbolsGlobal => Box::new(GlobalSymbolsHandler),

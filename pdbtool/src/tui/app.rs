@@ -47,6 +47,9 @@ impl TuiApp {
         
         // Update navigation with actual symbol information from PDB
         navigator.update_symbols_from_pdb(&pdb);
+        
+        // Update navigation with actual line information from PDB
+        navigator.update_lines_from_pdb(&pdb);
 
         Ok(Self {
             pdb,

@@ -18,6 +18,8 @@ pub enum TreeNodeId {
     SourceFiles,
     SourceFile { index: usize },
     Names,
+    Lines,
+    LinesModule { index: usize },
     Streams,
     Stream { index: u32 },
 }
@@ -164,6 +166,7 @@ impl TreeNavigator {
             TreeNode::new("Names", TreeNodeId::Names),
             TreeNode::new("Globals", TreeNodeId::Globals),
             TreeNode::new("Types", TreeNodeId::Types),
+            TreeNode::new("Lines", TreeNodeId::Lines),
             TreeNode::with_children("Symbols", TreeNodeId::Symbols, symbols_children),
             TreeNode::with_children("Streams", TreeNodeId::Streams, stream_children),
         ];
@@ -651,6 +654,61 @@ impl TreeNavigator {
                                 &stream_name,
                                 TreeNodeId::Stream { index: i },
                             ));
+                        }
+                        
+                        // Update depths for the new children
+                        Self::set_depths(&mut child_node.children, child_node.depth + 1);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        
+        // Refresh the flat items after updating
+        self.update_flat_items();
+    }
+
+    /// Update lines node with actual PDB module line information
+    pub fn update_lines_from_pdb(&mut self, pdb: &Pdb) {
+        // Find the "Lines" node under the main PDB entry and update its children
+        for root_node in &mut self.tree_nodes {
+            if matches!(root_node.id, TreeNodeId::DebugInfo) {
+                // Look for the Lines node within the debug info children
+                for child_node in &mut root_node.children {
+                    if matches!(child_node.id, TreeNodeId::Lines) {
+                        // Clear existing children and rebuild with modules that have line data
+                        child_node.children.clear();
+                        
+                        // Read DBI stream to get module information
+                        if let Ok(dbi_stream) = pdb.read_dbi_stream() {
+                            for (module_index, module) in dbi_stream.iter_modules().enumerate() {
+                                // Check if module has line data
+                                let has_c11_lines = module.header().c11_byte_size.get() != 0;
+                                let has_c13_lines = module.header().c13_byte_size.get() != 0;
+                                
+                                if has_c11_lines || has_c13_lines {
+                                    let format_indicator = if has_c11_lines && !has_c13_lines {
+                                        " (C11)"
+                                    } else if has_c13_lines {
+                                        " (C13)"
+                                    } else {
+                                        ""
+                                    };
+                                    
+                                    let module_name = format!(
+                                        "#{} - {}{}",
+                                        module_index,
+                                        module.module_name(),
+                                        format_indicator
+                                    );
+                                    
+                                    child_node.children.push(TreeNode::new(
+                                        &module_name,
+                                        TreeNodeId::LinesModule { index: module_index },
+                                    ));
+                                }
+                            }
                         }
                         
                         // Update depths for the new children
