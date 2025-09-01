@@ -298,6 +298,80 @@ impl TreeNavigator {
         }
     }
 
+    pub fn expand_selected_node(&mut self) {
+        if let Some(selected) = self.list_state.selected() {
+            let actual_index = if self.search_mode && !self.filtered_indices.is_empty() {
+                if let Some(&actual_idx) = self.filtered_indices.get(selected) {
+                    actual_idx
+                } else {
+                    return;
+                }
+            } else {
+                selected
+            };
+
+            if actual_index >= self.flat_items.len() {
+                return;
+            }
+
+            let has_children = self.flat_items[actual_index].has_children;
+            if !has_children {
+                return;
+            }
+
+            if let Some(path) = self.find_node_path(actual_index) {
+                self.expand_node_by_path(&path);
+                self.update_flat_items();
+            }
+        }
+    }
+
+    pub fn collapse_or_navigate_to_parent(&mut self) {
+        if let Some(selected) = self.list_state.selected() {
+            let actual_index = if self.search_mode && !self.filtered_indices.is_empty() {
+                if let Some(&actual_idx) = self.filtered_indices.get(selected) {
+                    actual_idx
+                } else {
+                    return;
+                }
+            } else {
+                selected
+            };
+
+            if actual_index >= self.flat_items.len() {
+                return;
+            }
+
+            let current_item = &self.flat_items[actual_index];
+            
+            // If the current node has children and is expanded, collapse it
+            if current_item.has_children {
+                if let Some(path) = self.find_node_path(actual_index) {
+                    if self.is_node_expanded_by_path(&path) {
+                        self.collapse_node_by_path(&path);
+                        self.update_flat_items();
+                        return;
+                    }
+                }
+            }
+            
+            // Otherwise, navigate to parent
+            if current_item.depth > 0 {
+                if let Some(parent_index) = self.find_parent_index(actual_index) {
+                    // Update selection to reflect the new flat items structure
+                    if self.search_mode && !self.filtered_indices.is_empty() {
+                        // In search mode, find the parent in filtered results
+                        if let Some(filtered_pos) = self.filtered_indices.iter().position(|&i| i == parent_index) {
+                            self.list_state.select(Some(filtered_pos));
+                        }
+                    } else {
+                        self.list_state.select(Some(parent_index));
+                    }
+                }
+            }
+        }
+    }
+
     pub fn expand_all(&mut self) {
         for node in &mut self.tree_nodes {
             node.expand_all();
@@ -421,6 +495,84 @@ impl TreeNavigator {
                 current_nodes = &mut current_nodes[index].children;
             }
         }
+    }
+
+    fn expand_node_by_path(&mut self, path: &[usize]) {
+        if path.is_empty() {
+            return;
+        }
+
+        let mut current_nodes = &mut self.tree_nodes;
+        for (i, &index) in path.iter().enumerate() {
+            if index >= current_nodes.len() {
+                return;
+            }
+
+            if i == path.len() - 1 {
+                current_nodes[index].expand();
+            } else {
+                current_nodes = &mut current_nodes[index].children;
+            }
+        }
+    }
+
+    fn collapse_node_by_path(&mut self, path: &[usize]) {
+        if path.is_empty() {
+            return;
+        }
+
+        let mut current_nodes = &mut self.tree_nodes;
+        for (i, &index) in path.iter().enumerate() {
+            if index >= current_nodes.len() {
+                return;
+            }
+
+            if i == path.len() - 1 {
+                current_nodes[index].collapse();
+            } else {
+                current_nodes = &mut current_nodes[index].children;
+            }
+        }
+    }
+
+    fn is_node_expanded_by_path(&self, path: &[usize]) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+
+        let mut current_nodes = &self.tree_nodes;
+        for (i, &index) in path.iter().enumerate() {
+            if index >= current_nodes.len() {
+                return false;
+            }
+
+            if i == path.len() - 1 {
+                return current_nodes[index].is_expanded;
+            } else {
+                current_nodes = &current_nodes[index].children;
+            }
+        }
+        false
+    }
+
+    fn find_parent_index(&self, child_index: usize) -> Option<usize> {
+        if child_index >= self.flat_items.len() {
+            return None;
+        }
+
+        let child_depth = self.flat_items[child_index].depth;
+        if child_depth == 0 {
+            return None; // Root level, no parent
+        }
+
+        // Look backwards for an item with depth one less than the child
+        for i in (0..child_index).rev() {
+            if self.flat_items[i].depth == child_depth - 1 {
+                return Some(i);
+            }
+        }
+
+        None
     }
 
     /// Update symbol modules with actual PDB module information

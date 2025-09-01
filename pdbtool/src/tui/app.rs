@@ -203,7 +203,7 @@ impl TuiApp {
             let help_text = if self.navigator.search_mode {
                 "Search Mode - Controls:\n• Type: Add to search query\n• Backspace: Remove from query\n• Enter: Select result\n• Esc: Exit search\n• ↑/↓: Navigate results".to_string()
             } else {
-                "Select an item to view details\n\nControls:\n• Tab: Cycle focus between panels\n• ↑/↓: Navigate tree/details\n• PgUp/PgDn: Page up/down in details\n• Enter/→: Expand/collapse nodes\n• Home/End: Jump to first/last item\n• /: Start search\n• h/l: Collapse/expand all\n• r: Refresh\n• q/Esc: Quit".to_string()
+                "Select an item to view details\n\nControls:\n• Tab: Cycle focus between panels\n• ↑/↓: Navigate tree/details\n• PgUp/PgDn: Page up/down in details\n• Enter: Toggle expand/collapse nodes\n• →: Expand nodes\n• ←: Collapse or navigate to parent\n• Home/End: Jump to first/last item\n• /: Start search\n• h/l: Collapse/expand all\n• r: Refresh\n• q/Esc: Quit".to_string()
             };
 
             MultiWidget::single(
@@ -345,8 +345,14 @@ impl TuiApp {
                 self.navigator.move_down();
                 self.reset_widget_focus();
             }
-            KeyCode::Enter | KeyCode::Right if self.is_tree_focused() => {
+            KeyCode::Enter if self.is_tree_focused() => {
                 self.navigator.toggle_selected_node();
+            }
+            KeyCode::Right if self.is_tree_focused() => {
+                self.navigator.expand_selected_node();
+            }
+            KeyCode::Left if self.is_tree_focused() => {
+                self.navigator.collapse_or_navigate_to_parent();
             }
             // Details panel navigation when details is focused
             KeyCode::Up
@@ -484,7 +490,7 @@ impl TuiApp {
                 let help_text = if self.navigator.search_mode {
                     "Search Mode - Controls:\n• Type: Add to search query\n• Backspace: Remove from query\n• Enter: Select result\n• Esc: Exit search\n• ↑/↓: Navigate results"
                 } else {
-                    "Select an item to view details\n\nControls:\n• Tab: Cycle focus between panels\n• ↑/↓: Navigate tree\n• Enter/→: Expand/collapse nodes\n• /: Start search\n• h/l: Collapse/expand all\n• r: Refresh\n• q/Esc: Quit"
+                    "Select an item to view details\n\nControls:\n• Tab: Cycle focus between panels\n• ↑/↓: Navigate tree\n• Enter: Toggle expand/collapse nodes\n• →: Expand nodes\n• ←: Collapse or navigate to parent\n• /: Start search\n• h/l: Collapse/expand all\n• r: Refresh\n• q/Esc: Quit"
                 };
                 MultiWidget::single(
                     WidgetType::Paragraph(Paragraph::new(help_text.to_string())),
