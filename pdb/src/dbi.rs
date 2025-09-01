@@ -417,7 +417,7 @@ impl<StreamData: AsRef<[u8]>> DbiStream<StreamData> {
     }
 
     /// Parses the Optional Debug Header Substream and returns an object which can query it.
-    pub fn optional_debug_header(&self) -> anyhow::Result<optional_dbg::OptionalDebugHeader> {
+    pub fn optional_debug_header(&self) -> anyhow::Result<optional_dbg::OptionalDebugHeader<'_>> {
         optional_dbg::OptionalDebugHeader::parse(self.optional_debug_header_bytes())
     }
 

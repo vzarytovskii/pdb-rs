@@ -35,6 +35,36 @@ Stream #     7 : (size     140696) Named { name: "/names" }
 Use `pdbtool --help` for a list of commands. Use `pdbtool dump --help` for help with the `dump`
 command, which has many subcommands.
 
+## Interactive TUI Mode
+
+The tool also provides an interactive Terminal User Interface (TUI) mode for exploring PDB files:
+
+```batch
+pdbtool --interactive hello_world.pdb
+```
+
+This launches a two-pane interface:
+- **Left pane**: Tree view of the PDB structure (streams, modules, symbols, etc.)
+- **Right pane**: Details panel showing information about the selected item
+
+### TUI Navigation
+
+- `↑/↓` - Navigate tree items
+- `Enter/→` - Expand/collapse selected node
+- `q` or `Esc` - Quit
+
+The TUI displays placeholder content for each selected tree element based on PDB data:
+- **Debug Info**: Shows binding key and overview
+- **Symbols**: Information about the Global Symbol Stream
+- **Types**: Type stream header information and index ranges
+- **Modules**: Module count and details for each compilation unit
+- **Individual Modules**: Module name, object file, stream info, and sizes
+- **Source Files**: Source information overview
+- **Names**: Names stream information
+- **Streams**: Raw stream data overview
+
+The tree structure is dynamically built from the PDB file contents, making it easy to explore the hierarchical organization of debug information.
+
 ## Help
 
 ```batch
@@ -47,22 +77,23 @@ Usage: pdbtool [OPTIONS] <COMMAND>
 Commands:
   add-src     Adds source file contents to the PDB. The contents are embedded directly within the PDB. WinDbg and Visual Studio can both extract the source files
   copy        Copies a PDB from one file to another. All stream contents are preserved exactly, byte-for-byte. The blocks within streams are laid out sequentially
-  test        
-  dump        
-  save        
+  test
+  dump
+  save
   find        Searches the DBI Section Contributions table
   find-name   Searches the TPI Stream for a given type
   counts      Counts the number of records and record sizes for a given set of PDBs
   hexdump     Dumps part of a file (any file, not just a PDB) as a hex dump. If you want to dump a specific stream, then use the `dump <filename> hex` command instead
-  pdz-encode  
+  pdz-encode
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --quiet       Reduce logging to just warnings and errors in `mspdb` and `pdbtool` modules
-      --verbose     Turn on debug output in all `mspdb` and `pdbtool` modules. Noisy!
-      --timestamps  Show timestamps in log messages
-      --tracy       Connect to Tracy (diagnostics tool). Requires that the `tracy` Cargo feature be enabled
-  -h, --help        Print help
+      --quiet        Reduce logging to just warnings and errors in `mspdb` and `pdbtool` modules
+      --verbose      Turn on debug output in all `mspdb` and `pdbtool` modules. Noisy!
+      --timestamps   Show timestamps in log messages
+      --tracy        Connect to Tracy (diagnostics tool). Requires that the `tracy` Cargo feature be enabled
+      --interactive  Launch interactive TUI mode for exploring PDB files
+  -h, --help         Print help
 ```
 
 ## Help - dump
@@ -78,20 +109,20 @@ pdbtool dump --help
 Usage: pdbtool dump [OPTIONS] <PDB> <COMMAND>
 
 Commands:
-  names                
-  globals              
+  names
+  globals
   tpi                  Dump the Type Stream (TPI)
   ipi                  Dump the Id Stream (TPI)
   dbi                  Dump DBI header
   dbi-enc              Dump DBI Edit-and-Continue Substream
-  dbi-type-server-map  
+  dbi-type-server-map
   gsi                  Global Symbol Index. Loads the GSI and iterates through its hash records. For each one, finds the symbol record in the GSS and displays it
   psi                  Public Symbol Index. Loads the PSI and iterates through its hash records. For each one, finds the symbol record in the GSS and displays it
-  modules              
+  modules
   streams              Dump the Stream Directory
   lines                Dumps C13 Line Data for a given module
   sources              Dump the DBI Stream - Sources substream
-  section-map          
+  section-map
   section-contribs     Dump section contributions (quite large!)
   pdbi                 Dump the PDB Info Stream
   module-symbols       Displays the symbols for a specific module
@@ -102,7 +133,7 @@ Arguments:
   <PDB>  The PDB to dump
 
 Options:
-      --lines-like-cvdump  
+      --lines-like-cvdump
   -h, --help               Print help
 ```
 
@@ -171,4 +202,3 @@ trademarks or logos are subject to those third-party's policies.
 
 * `sivadeilra` on GitHub
 * Arlie Davis ardavis@microsoft.com
-

@@ -1,4 +1,5 @@
 #![forbid(unused_must_use)]
+#![feature(let_chains)]
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::manual_map)]
 #![allow(clippy::single_match)]
@@ -39,8 +40,16 @@ struct CommandWithFlags {
     #[arg(long)]
     tracy: bool,
 
+    /// Launch interactive TUI mode for exploring PDB files
+    #[arg(long)]
+    interactive: bool,
+
+    /// The PDB file to process (required for interactive mode)
+    #[arg(required_if_eq("interactive", "true"))]
+    pdb_file: Option<String>,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(clap::Subcommand)]
@@ -68,22 +77,33 @@ enum Command {
     PdzEncode(pdz::encode::PdzEncodeOptions),
 }
 
+mod tui;
+
 fn main() -> anyhow::Result<()> {
     let command_with_flags = CommandWithFlags::parse();
     configure_tracing(&command_with_flags);
 
+    if command_with_flags.interactive {
+        let pdb_file = command_with_flags.pdb_file.unwrap();
+        return tui::run_tui(pdb_file);
+    }
+
     match command_with_flags.command {
-        Command::AddSrc(args) => addsrc::command(args)?,
-        Command::Dump(args) => dump::dump_main(args)?,
-        Command::Test => {}
-        Command::Copy(args) => copy::copy_command(&args)?,
-        Command::Save(args) => save::save_stream(&args)?,
-        Command::Find(args) => find::find_command(&args)?,
-        Command::FindName(args) => find::find_name_command(&args)?,
-        Command::Counts(args) => counts::counts_command(args)?,
-        Command::Hexdump(args) => hexdump::command(args)?,
-        Command::PdzEncode(args) => pdz::encode::pdz_encode(args)?,
-        Command::Container(args) => container::container_command(&args)?,
+        Some(Command::AddSrc(args)) => addsrc::command(args)?,
+        Some(Command::Dump(args)) => dump::dump_main(args)?,
+        Some(Command::Test) => {}
+        Some(Command::Copy(args)) => copy::copy_command(&args)?,
+        Some(Command::Save(args)) => save::save_stream(&args)?,
+        Some(Command::Find(args)) => find::find_command(&args)?,
+        Some(Command::FindName(args)) => find::find_name_command(&args)?,
+        Some(Command::Counts(args)) => counts::counts_command(args)?,
+        Some(Command::Hexdump(args)) => hexdump::command(args)?,
+        Some(Command::PdzEncode(args)) => pdz::encode::pdz_encode(args)?,
+        Some(Command::Container(args)) => container::container_command(&args)?,
+        None => {
+            eprintln!("Error: No command specified. Use --help for usage information.");
+            std::process::exit(1);
+        }
     }
 
     Ok(())

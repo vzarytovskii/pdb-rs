@@ -29,6 +29,10 @@ zerocopy-derive.workspace = true
 zerocopy.workspace = true
 zstd.workspace = true
 
+ratatui = "0.29"
+crossterm = "0.28"
+lru = "0.12"
+
 [dependencies.ms-pdb]
 version = "0.1.9"
 path = "../pdb"
