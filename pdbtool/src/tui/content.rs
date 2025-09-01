@@ -373,16 +373,131 @@ pub struct TypesHandler;
 
 impl ContentProvider for TypesHandler {
     fn get_content(&self, pdb: &Pdb) -> Result<MultiWidget<'static>> {
-        let _type_stream = pdb.read_type_stream()?;
+        let type_stream = pdb.read_type_stream()?;
+        let ipi_stream = pdb.read_ipi_stream()?;
+        
+        // Create summary information
+        let type_index_begin = type_stream.type_index_begin();
+        let type_index_end = type_stream.type_index_end();
+        let num_types = type_stream.num_types();
+        
+        let header_info = if let Some(header) = type_stream.header() {
+            format!(
+                "Type range: T#{:08x} - T#{:08x} ({} types)\nHash buckets: {}, Hash key size: {}",
+                type_index_begin.0,
+                type_index_end.0,
+                num_types,
+                header.num_hash_buckets.get(),
+                header.hash_key_size.get()
+            )
+        } else {
+            "Type stream header not available".to_string()
+        };
 
-        // TODO: Implement type browsing
-        let content = helpers::create_paragraph(
-            "Type information\n\nTODO: Implement type browser with hierarchical view".to_string(),
-        );
-        Ok(MultiWidget::single(
-            content,
-            ratatui::layout::Constraint::Min(1),
-        ))
+        let summary = helpers::create_paragraph(format!(
+            "Type Information (TPI Stream)\n\n{}", header_info
+        ));
+
+        // Create context for type dumping
+        let mut context = DumpSymsContext::new(&type_stream, &ipi_stream);
+        context.show_type_index = false; // Show cleaner output
+
+        // Process type records with higher limit for better user experience
+        let mut type_items = Vec::new();
+        let iter = type_stream.iter_type_records().with_ranges();
+        let mut current_type_index = type_index_begin;
+        let mut processed_count = 0;
+        const MAX_TYPES_TO_SHOW: usize = 10000; // Further increased limit
+        
+        // Try to get names stream for additional context
+        let names_stream = pdb.names().ok();
+
+        let type_stream_start = type_stream.type_records_range().start;
+
+        for (record_range, ty) in iter {
+            if processed_count >= MAX_TYPES_TO_SHOW {
+                type_items.push(ListItem::new(format!(
+                    "... and {} more types (showing first {} - use CLI for complete output)",
+                    num_types as usize - processed_count,
+                    MAX_TYPES_TO_SHOW
+                )));
+                break;
+            }
+
+            // Create detailed type information using the dump functionality
+            let mut type_info = String::new();
+            
+            if let Err(e) = crate::dump::types::dump_type_record(
+                &mut type_info,
+                &mut |out, ti| crate::dump::types::dump_type_index_short(out, &context, ti),
+                &mut |out, item| crate::dump::types::dump_item_short(out, &context, item),
+                'T',
+                names_stream, // Pass names stream for richer output
+                record_range.start + type_stream_start,
+                current_type_index,
+                ty.kind,
+                ty.data,
+                &crate::dump::types::DumpTypeStreamOptions {
+                    skip: None,
+                    max: None,
+                    show_bytes: false,
+                    show_type_indexes: true, // Show type indexes for reference
+                },
+            ) {
+                type_info = format!(
+                    "[{:08x}] T#{:08x} [{:04x}] {:?} - Error: {}",
+                    record_range.start + type_stream_start,
+                    current_type_index.0,
+                    ty.kind.0,
+                    ty.kind,
+                    e
+                );
+            }
+
+            // Clean up the output and create list item with the first line
+            let display_text = type_info
+                .lines()
+                .next()
+                .unwrap_or(&format!(
+                    "[{:08x}] T#{:08x} [{:04x}] {:?}",
+                    record_range.start + type_stream_start,
+                    current_type_index.0,
+                    ty.kind.0,
+                    ty.kind
+                ))
+                .trim()
+                .to_string();
+
+            type_items.push(ListItem::new(display_text));
+
+            current_type_index.0 += 1;
+            processed_count += 1;
+        }
+
+        // Handle empty case
+        if type_items.is_empty() {
+            let empty_content = helpers::create_paragraph(
+                "No type records found in this PDB file".to_string()
+            );
+            return Ok(MultiWidget::new()
+                .add(summary, ratatui::layout::Constraint::Length(5))
+                .add(empty_content, ratatui::layout::Constraint::Min(5)));
+        }
+
+        // Create the types list
+        let list = helpers::create_list(type_items);
+
+        // Add enhanced navigation hint with more info about functionality
+        let hint = helpers::create_paragraph(format!(
+            "Navigation: ↑/↓ navigate | PgUp/PgDn page | Tab switch panels | / search\nShowing {} types (limit: {} - increase available on request)\nFor complete type details with field lists, use CLI: pdbtool dump <file.pdb> tpi",
+            processed_count.min(num_types as usize),
+            MAX_TYPES_TO_SHOW
+        ));
+
+        Ok(MultiWidget::new()
+            .add(summary, ratatui::layout::Constraint::Length(5))
+            .add(list, ratatui::layout::Constraint::Min(15))
+            .add(hint, ratatui::layout::Constraint::Length(4)))
     }
 }
 

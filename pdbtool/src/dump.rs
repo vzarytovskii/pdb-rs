@@ -22,7 +22,7 @@ mod names;
 mod sources;
 mod streams;
 pub mod sym;
-mod types;
+pub mod types;
 
 #[derive(clap::Parser)]
 pub struct DumpOptions {
